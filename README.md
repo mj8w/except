@@ -17,6 +17,29 @@ point for answering: "what exceptions could this statement trigger?"
 
 ## Usage
 
+This project uses the local virtual environment in `.venv` for development and testing.
+
+Create or activate it with:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+Run commands through the venv interpreter when not activated:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest
+.\.venv\Scripts\python.exe -m except_tool.cli path/to/file.py 12
+```
+
+Or use the helper script:
+
+```powershell
+.\scripts\venv-run.cmd pytest
+.\scripts\venv-run.cmd except_tool.cli path/to/file.py 12
+```
+
 ```bash
 python -m except_tool.cli path/to/file.py 12
 ```
@@ -45,3 +68,7 @@ Unresolved calls:
 - does not yet model imports, methods, dynamic dispatch, decorators, or type-based dispatch
 - only reports explicit `raise` statements from resolved functions
 - does not infer all implicit exceptions from operations such as indexing or arithmetic
+
+## License
+
+MIT
