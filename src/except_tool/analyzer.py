@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from dataclasses import field
 from pathlib import Path
 
 
@@ -43,6 +44,21 @@ class StatementReport:
     statement_line: int
     findings: list[ExceptionFinding] = field(default_factory=list)
     unresolved_calls: list[UnresolvedCall] = field(default_factory=list)
+    call_tree: list["CallTreeNode"] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class CallTreeNode:
+    """Represents one explored call in the statement's reachable call tree."""
+
+    name: str
+    line: int
+    path: tuple[str, ...]
+    resolved: bool
+    definition_line: int | None = None
+    recursive: bool = False
+    findings: list[ExceptionFinding] = field(default_factory=list)
+    children: list["CallTreeNode"] = field(default_factory=list)
 
 
 class FunctionSummaryBuilder(ast.NodeVisitor):
@@ -62,7 +78,9 @@ class FunctionSummaryBuilder(ast.NodeVisitor):
             message = _raise_message(node.exc)
 
         if not self._is_handled(exc_name):
-            self.raises.append(RaiseSite(exception_name=exc_name, line=node.lineno, message=message))
+            self.raises.append(
+                RaiseSite(exception_name=exc_name, line=node.lineno, message=message)
+            )
 
     def visit_Call(self, node: ast.Call) -> None:
         call_name = _call_name(node)
@@ -129,24 +147,27 @@ class ModuleAnalyzer:
         """Analyze the statement covering the given line number."""
 
         statement = self._find_statement(line_number)
-        statement_source = ast.get_source_segment(self.source, statement) or statement.__class__.__name__
+        statement_source = (
+            ast.get_source_segment(self.source, statement) or statement.__class__.__name__
+        )
 
         builder = FunctionSummaryBuilder()
         builder.visit(statement)
 
         report = StatementReport(
-            statement_source=statement_source.strip(),
-            statement_line=statement.lineno,
+            statement_source=statement_source.strip(), statement_line=statement.lineno
         )
 
         visited: set[str] = set()
         for call_name, call_line in builder.calls:
-            self._explore_call(
-                call_name=call_name,
-                call_line=call_line,
-                path=(call_name,),
-                visited=visited,
-                report=report,
+            report.call_tree.append(
+                self._explore_call(
+                    call_name=call_name,
+                    call_line=call_line,
+                    path=(call_name,),
+                    visited=visited,
+                    report=report,
+                )
             )
 
         self._dedupe_report(report)
@@ -160,10 +181,7 @@ class ModuleAnalyzer:
                 for item in node.body:
                     builder.visit(item)
                 summaries[node.name] = FunctionSummary(
-                    name=node.name,
-                    line=node.lineno,
-                    raises=builder.raises,
-                    calls=builder.calls,
+                    name=node.name, line=node.lineno, raises=builder.raises, calls=builder.calls
                 )
         return summaries
 
@@ -195,48 +213,62 @@ class ModuleAnalyzer:
         path: tuple[str, ...],
         visited: set[str],
         report: StatementReport,
-    ) -> None:
+    ) -> CallTreeNode:
         summary = self.function_summaries.get(call_name)
         if summary is None:
-            report.unresolved_calls.append(UnresolvedCall(name=call_name, line=call_line, path=path))
-            return
+            report.unresolved_calls.append(
+                UnresolvedCall(name=call_name, line=call_line, path=path)
+            )
+            return CallTreeNode(name=call_name, line=call_line, path=path, resolved=False)
+
+        node = CallTreeNode(
+            name=call_name, line=call_line, path=path, resolved=True, definition_line=summary.line
+        )
 
         for raise_site in summary.raises:
-            report.findings.append(
-                ExceptionFinding(
-                    exception_name=raise_site.exception_name,
-                    line=raise_site.line,
-                    path=path,
-                    message=raise_site.message,
-                )
+            finding = ExceptionFinding(
+                exception_name=raise_site.exception_name,
+                line=raise_site.line,
+                path=path,
+                message=raise_site.message,
             )
+            report.findings.append(finding)
+            node.findings.append(finding)
 
         if call_name in visited:
-            return
+            node.recursive = True
+            return node
 
         visited.add(call_name)
         for nested_call_name, nested_call_line in summary.calls:
-            self._explore_call(
-                call_name=nested_call_name,
-                call_line=nested_call_line,
-                path=path + (nested_call_name,),
-                visited=visited,
-                report=report,
+            node.children.append(
+                self._explore_call(
+                    call_name=nested_call_name,
+                    call_line=nested_call_line,
+                    path=path + (nested_call_name,),
+                    visited=visited,
+                    report=report,
+                )
             )
         visited.remove(call_name)
+        return node
 
     def _dedupe_report(self, report: StatementReport) -> None:
         unique_findings: dict[tuple[str, int, tuple[str, ...]], ExceptionFinding] = {}
         for finding in report.findings:
             key = (finding.exception_name, finding.line, finding.path)
             unique_findings[key] = finding
-        report.findings = sorted(unique_findings.values(), key=lambda item: (item.line, item.exception_name, item.path))
+        report.findings = sorted(
+            unique_findings.values(), key=lambda item: (item.line, item.exception_name, item.path)
+        )
 
         unique_unresolved: dict[tuple[str, int, tuple[str, ...]], UnresolvedCall] = {}
         for unresolved in report.unresolved_calls:
             key = (unresolved.name, unresolved.line, unresolved.path)
             unique_unresolved[key] = unresolved
-        report.unresolved_calls = sorted(unique_unresolved.values(), key=lambda item: (item.line, item.name, item.path))
+        report.unresolved_calls = sorted(
+            unique_unresolved.values(), key=lambda item: (item.line, item.name, item.path)
+        )
 
 
 def _call_name(node: ast.Call) -> str | None:

@@ -50,6 +50,12 @@ Or after installation:
 except path/to/file.py 12
 ```
 
+For a tree-shaped debug view of explored calls and raise sites:
+
+```bash
+except path/to/file.py 12 --format tree
+```
+
 ## Example output
 
 ```text
