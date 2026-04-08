@@ -20,7 +20,9 @@ def sample_module_path(project_root: Path) -> Path:
 
 
 @pytest.fixture(scope="class")
-def sample_module_test_context(request: pytest.FixtureRequest, project_root: Path, sample_module_path: Path) -> None:
+def sample_module_test_context(
+    request: pytest.FixtureRequest, project_root: Path, sample_module_path: Path
+) -> None:
     """Attach shared sample module paths to pytest test classes."""
 
     request.cls.project_root = project_root

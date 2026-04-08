@@ -14,7 +14,7 @@ authors = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["black>=26.0", "flake8>=7.0", "isort>=6.0", "pytest>=8.0"]
 
 [project.scripts]
 except = "except_tool.cli:main"
@@ -28,3 +28,16 @@ where = ["src"]
 [tool.pytest.ini_options]
 addopts = "-p no:cacheprovider"
 testpaths = ["tests"]
+
+[tool.black]
+line-length = 99
+skip-magic-trailing-comma = true
+target-version = ["py313"]
+
+[tool.isort]
+force_single_line = true
+line_length = 99
+profile = "black"
+
+[tool.flake8]
+max-line-length = 99
