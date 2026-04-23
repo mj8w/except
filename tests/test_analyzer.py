@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from except_tool.analyzer import ModuleAnalyzer
+from except_tool.analyzer import native_exceptions_for_line
 
 
 @pytest.fixture(scope="class")
@@ -42,3 +43,39 @@ class TestModuleAnalyzer:
         assert [finding.exception_name for finding in root.children[0].children[1].findings] == [
             "ValueError"
         ]
+
+
+def test_analyze_statement_resolves_imported_library_summaries(requests_module_path) -> None:
+    report = ModuleAnalyzer(requests_module_path).analyze_statement(9)
+    root = report.call_tree[0]
+    library_node = root.children[0]
+
+    assert root.name == "fetch_status"
+    assert library_node.name == "requests.get"
+    assert library_node.summary_source == "library"
+    assert library_node.escaping_exceptions == [
+        "ConnectionError",
+        "RequestException",
+        "Timeout",
+        "TooManyRedirects",
+    ]
+    assert report.unresolved_calls == []
+
+
+class TestNativeExceptionsForLine:
+    def test_reports_builtin_call_exceptions(self) -> None:
+        assert native_exceptions_for_line('value = int(payload["count"])') == [
+            "IndexError",
+            "KeyError",
+            "TypeError",
+            "ValueError",
+        ]
+
+    def test_reports_operator_exceptions(self) -> None:
+        assert native_exceptions_for_line("ratio = total / count") == [
+            "TypeError",
+            "ZeroDivisionError",
+        ]
+
+    def test_accepts_return_statement_lines(self) -> None:
+        assert native_exceptions_for_line("return max(values)") == ["TypeError", "ValueError"]

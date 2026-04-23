@@ -46,17 +46,29 @@ def main() -> int:
         _print_tree_report(report)
         return 0
 
-    if report.findings:
-        print("Potential exceptions:")
-        for finding in report.findings:
+    explicit = [f for f in report.findings if not f.implicit]
+    implicit = [f for f in report.findings if f.implicit]
+
+    if explicit:
+        print("Potential exceptions (explicit raise):")
+        for finding in explicit:
             chain = " -> ".join(finding.path)
             details = f" (line {finding.line})"
             if finding.message:
                 details += f": {finding.message}"
             print(f"- {finding.exception_name} via {chain}{details}")
-    else:
+
+    if implicit:
+        print()
+        print("Potential exceptions (implicit operations):")
+        for finding in implicit:
+            chain = " -> ".join(finding.path)
+            op_label = f" [{finding.operation}]" if finding.operation else ""
+            print(f"- {finding.exception_name} via {chain}" f" (line {finding.line}){op_label}")
+
+    if not explicit and not implicit:
         print("Potential exceptions:")
-        print("- none found from explicit raise statements in resolved local functions")
+        print("- none found from explicit raise statements in" " resolved local functions")
 
     if report.unresolved_calls:
         print()
@@ -69,9 +81,9 @@ def main() -> int:
 
 
 def _print_tree_report(report) -> None:
-    """Render a tree-shaped debug view of explored calls and exception sites."""
+    """Render a table view of explored calls and exception propagation."""
 
-    print("Call tree:")
+    print(f"{'Call tree':<36} Exceptions")
     if not report.call_tree:
         print("- no function calls found in the target statement")
         return
@@ -81,22 +93,36 @@ def _print_tree_report(report) -> None:
 
 
 def _print_tree_node(node, indent: str) -> None:
-    marker = "call" if node.resolved else "unresolved call"
-    details = f"{indent}- {marker} {node.name} (line {node.line})"
-    if node.definition_line is not None:
-        details += f", def line {node.definition_line}"
+    label = f"{indent}{node.name}"
     if node.recursive:
-        details += " [recursive]"
-    print(details)
+        label += " [recursive]"
+    print(f"{label:<36} {_format_tree_exceptions(node)}")
 
     child_indent = f"{indent}  "
-    for finding in node.findings:
-        message = f": {finding.message}" if finding.message else ""
-        print(
-            f"{child_indent}- raises {finding.exception_name} " f"(line {finding.line}){message}"
-        )
     for child in node.children:
         _print_tree_node(child, indent=child_indent)
+
+
+def _format_tree_exceptions(node) -> str:
+    parts = []
+    if node.escaping_exceptions:
+        parts.append(", ".join(node.escaping_exceptions))
+
+    raised = sorted({finding.exception_name for finding in node.findings})
+    if node.summary_source == "library":
+        raised = []
+    if raised:
+        parts.append(f"[raises {', '.join(raised)}]")
+
+    if node.swallowed_exceptions:
+        parts.append(f"[swallows {', '.join(node.swallowed_exceptions)}]")
+
+    if node.summary_source == "library":
+        parts.append("[library summary]")
+
+    if not parts:
+        return "-"
+    return "; ".join(parts)
 
 
 if __name__ == "__main__":

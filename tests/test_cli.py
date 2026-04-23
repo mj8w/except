@@ -36,9 +36,70 @@ class TestCli:
         captured = capsys.readouterr()
 
         assert exit_code == 0
-        assert "Call tree:" in captured.out
-        assert "- call load_value (line 19), def line " in captured.out
-        assert "  - call read_number" in captured.out
-        assert "    - unresolved call open" in captured.out
-        assert "    - call parse_number" in captured.out
-        assert "      - raises ValueError" in captured.out
+        assert "Call tree" in captured.out
+        assert "Exceptions" in captured.out
+        assert "load_value" in captured.out
+        assert "read_number" in captured.out
+        assert "open" in captured.out
+        assert "FileNotFoundError, OSError" in captured.out
+        assert "[raises ValueError]" in captured.out
+
+
+def test_main_renders_swallowed_exceptions_in_tree_output(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    project_root,
+    caught_exception_module_path,
+) -> None:
+    monkeypatch.chdir(project_root)
+    monkeypatch.setattr(
+        "sys.argv", ["except", str(caught_exception_module_path), "14", "--format", "tree"]
+    )
+
+    exit_code = cli.main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "wrapper" in captured.out
+    assert "leaf" in captured.out
+    assert "wrapper" in captured.out and "[swallows ValueError]" in captured.out
+    assert "leaf" in captured.out and "ValueError; [raises ValueError]" in captured.out
+
+
+def test_main_can_analyze_a_module_that_imports_requests(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    project_root,
+    requests_module_path,
+) -> None:
+    monkeypatch.chdir(project_root)
+    monkeypatch.setattr("sys.argv", ["except", str(requests_module_path), "9"])
+
+    exit_code = cli.main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert 'Statement at line 9: return fetch_status("https://example.com")' in captured.out
+    assert "Potential exceptions (implicit operations):" in captured.out
+    assert "ConnectionError via fetch_status -> requests.get" in captured.out
+    assert "RequestException via fetch_status -> requests.get" in captured.out
+    assert "Unresolved calls:" not in captured.out
+
+
+def test_main_renders_library_summaries_in_tree_output(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    project_root,
+    requests_module_path,
+) -> None:
+    monkeypatch.chdir(project_root)
+    monkeypatch.setattr("sys.argv", ["except", str(requests_module_path), "9", "--format", "tree"])
+
+    exit_code = cli.main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "fetch_status" in captured.out
+    assert "requests.get" in captured.out
+    assert "ConnectionError, RequestException, Timeout, TooManyRedirects" in captured.out
+    assert "[library summary]" in captured.out
