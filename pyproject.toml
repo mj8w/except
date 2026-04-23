@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "except"
 version = "0.1.0"
-description = "Explore the potential exception surface of a Python statement."
+description = "Trace raised, swallowed, and escaping exceptions from a Python line."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"

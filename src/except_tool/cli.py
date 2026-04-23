@@ -7,8 +7,6 @@ from pathlib import Path
 
 from except_tool.analyzer import ModuleAnalyzer
 
-# TODO: Create a text output mode that shows possible call trees and where
-# exceptions are raised or handled.
 # TODO: If an installed library does not have Python source available, try
 # other strategies for inspecting it.
 
@@ -17,15 +15,21 @@ def build_parser() -> argparse.ArgumentParser:
     """Create the argument parser for the CLI."""
 
     parser = argparse.ArgumentParser(
-        prog="except", description="Explore the potential exception surface of a Python statement."
+        prog="except",
+        description=(
+            "Trace the exceptions that can be raised, swallowed, or left escaping "
+            "from a Python line."
+        ),
     )
-    parser.add_argument("source_file", help="Path to the Python source file to inspect.")
-    parser.add_argument("line", type=int, help="Line number containing the target statement.")
+    parser.add_argument("source_file", help="Python source file to inspect.")
+    parser.add_argument(
+        "line", type=int, help="Line number containing the statement or function body to analyze."
+    )
     parser.add_argument(
         "--format",
         choices=("summary", "tree"),
         default="summary",
-        help="Choose between the compact exception summary and a tree debug view.",
+        help="Output style: compact summary or two-column propagation tree.",
     )
     return parser
 
