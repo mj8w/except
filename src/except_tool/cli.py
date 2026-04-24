@@ -113,7 +113,7 @@ def _format_tree_exceptions(node) -> str:
         parts.append(", ".join(node.escaping_exceptions))
 
     raised = sorted({finding.exception_name for finding in node.findings})
-    if node.summary_source == "library":
+    if node.summary_source in {"builtin summary", "stdlib summary", "library summary"}:
         raised = []
     if raised:
         parts.append(f"[raises {', '.join(raised)}]")
@@ -121,8 +121,16 @@ def _format_tree_exceptions(node) -> str:
     if node.swallowed_exceptions:
         parts.append(f"[swallows {', '.join(node.swallowed_exceptions)}]")
 
-    if node.summary_source == "library":
+    if node.summary_source == "builtin summary":
+        parts.append("[builtin summary]")
+    elif node.summary_source == "stdlib summary":
+        parts.append("[stdlib summary]")
+    elif node.summary_source == "library summary":
         parts.append("[library summary]")
+    elif node.summary_source == "stdlib source":
+        parts.append("[stdlib source]")
+    elif node.summary_source == "library source":
+        parts.append("[library source]")
 
     if not parts:
         return "-"

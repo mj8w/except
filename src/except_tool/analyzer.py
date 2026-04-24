@@ -3,47 +3,17 @@
 from __future__ import annotations
 
 import ast
-import builtins
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
 
-BUILTIN_EXCEPTIONS = {
-    "int": ["ValueError", "TypeError"],
-    "float": ["ValueError", "TypeError"],
-    "str": ["TypeError"],
-    "dict": ["TypeError"],
-    "list": ["TypeError"],
-    "tuple": ["TypeError"],
-    "set": ["TypeError"],
-    "open": ["FileNotFoundError", "OSError"],
-    "len": ["TypeError"],
-    "sum": ["TypeError"],
-    "min": ["ValueError", "TypeError"],
-    "max": ["ValueError", "TypeError"],
-    "sorted": ["TypeError"],
-    "reversed": ["TypeError"],
-    "enumerate": ["TypeError"],
-    "zip": ["TypeError"],
-    "map": ["TypeError"],
-    "filter": ["TypeError"],
-}
-
-LIBRARY_EXCEPTIONS = {
-    "json.loads": ["JSONDecodeError", "TypeError"],
-    "requests.delete": ["ConnectionError", "RequestException", "Timeout", "TooManyRedirects"],
-    "requests.get": ["ConnectionError", "RequestException", "Timeout", "TooManyRedirects"],
-    "requests.patch": ["ConnectionError", "RequestException", "Timeout", "TooManyRedirects"],
-    "requests.post": ["ConnectionError", "RequestException", "Timeout", "TooManyRedirects"],
-    "requests.put": ["ConnectionError", "RequestException", "Timeout", "TooManyRedirects"],
-    "urllib.request.urlopen": ["HTTPError", "URLError"],
-}
-
-NATIVE_EXCEPTION_NAMES = frozenset(
-    name
-    for name, value in vars(builtins).items()
-    if isinstance(value, type) and issubclass(value, BaseException)
-)
+from except_tool.analyzer_data import BUILTIN_EXCEPTIONS
+from except_tool.analyzer_data import NATIVE_EXCEPTION_NAMES
+from except_tool.analyzer_data import STDLIB_METHOD_EXCEPTIONS
+from except_tool.analyzer_data import SUMMARY_EXCEPTIONS
+from except_tool.analyzer_data import module_source_path
+from except_tool.analyzer_data import source_kind_for_path
+from except_tool.analyzer_data import summary_source_for_name
 
 
 @dataclass(slots=True)
@@ -71,6 +41,16 @@ class CallSite:
     name: str
     line: int
     handled_exceptions: frozenset[str | None] = frozenset()
+
+
+@dataclass(slots=True)
+class ResolvedCallTarget:
+    """Describes a resolved function target and the analyzer that owns it."""
+
+    analyzer: "ModuleAnalyzer"
+    summary: "FunctionSummary"
+    display_name: str
+    summary_source: str | None = None
 
 
 @dataclass(slots=True)
@@ -171,6 +151,7 @@ class FunctionSummaryBuilder(ast.NodeVisitor):
         self.calls: list[CallSite] = []
         self.implicit_exceptions: list[tuple[str, int, str, str]] = []
         self.import_aliases = import_aliases or {}
+        self.variable_types: dict[str, str] = {}
         self._handled_stack: list[set[str | None]] = []
 
     def visit_Raise(self, node: ast.Raise) -> None:
@@ -187,7 +168,7 @@ class FunctionSummaryBuilder(ast.NodeVisitor):
             )
 
     def visit_Call(self, node: ast.Call) -> None:
-        call_name = _call_name(node, self.import_aliases)
+        call_name = _call_name(node, self.import_aliases, self.variable_types)
         if call_name is not None:
             self.calls.append(
                 CallSite(
@@ -196,6 +177,14 @@ class FunctionSummaryBuilder(ast.NodeVisitor):
                     handled_exceptions=frozenset(self._active_handlers()),
                 )
             )
+        self.generic_visit(node)
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        self._record_assignment_types(node.targets, node.value)
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self._record_assignment_types([node.target], node.value)
         self.generic_visit(node)
 
     def visit_BinOp(self, node: ast.BinOp) -> None:
@@ -253,6 +242,18 @@ class FunctionSummaryBuilder(ast.NodeVisitor):
             active.update(handled)
         return active
 
+    def _record_assignment_types(self, targets: list[ast.expr], value: ast.AST | None) -> None:
+        if value is None:
+            return
+
+        constructor_name = _call_name(value, self.import_aliases, self.variable_types)
+        if constructor_name is None:
+            return
+
+        for target in targets:
+            if isinstance(target, ast.Name):
+                self.variable_types[target.id] = constructor_name
+
 
 @dataclass(slots=True)
 class FunctionSummary:
@@ -268,8 +269,15 @@ class FunctionSummary:
 class ModuleAnalyzer:
     """Analyzes one Python module and reports possible exceptions for statements."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self,
+        path: Path,
+        module_name: str | None = None,
+        analyzer_cache: dict[Path, "ModuleAnalyzer"] | None = None,
+    ) -> None:
         self.path = path
+        self.module_name = module_name or path.stem
+        self._analyzer_cache = analyzer_cache if analyzer_cache is not None else {path: self}
         self.source = path.read_text(encoding="utf-8")
         self.tree = ast.parse(self.source, filename=str(path))
         self.lines = self.source.splitlines()
@@ -291,7 +299,7 @@ class ModuleAnalyzer:
             statement_source=statement_source.strip(), statement_line=statement.lineno
         )
 
-        visited: set[str] = set()
+        visited: set[tuple[Path, str]] = set()
         for call_site in builder.calls:
             report.call_tree.append(
                 self._explore_call(
@@ -361,13 +369,13 @@ class ModuleAnalyzer:
         self,
         call_site: CallSite,
         path: tuple[str, ...],
-        visited: set[str],
+        visited: set[tuple[Path, str]],
         report: StatementReport,
     ) -> CallTreeNode:
         call_name = call_site.name
         call_line = call_site.line
-        summary = self.function_summaries.get(call_name)
-        if summary is None:
+        target = self._resolve_call_target(call_name)
+        if target is None:
             node = CallTreeNode(
                 name=call_name,
                 line=call_line,
@@ -376,45 +384,58 @@ class ModuleAnalyzer:
                 handled_exceptions=call_site.handled_exceptions,
             )
             if call_name in BUILTIN_EXCEPTIONS:
-                report.unresolved_calls.append(
-                    UnresolvedCall(name=call_name, line=call_line, path=path)
-                )
+                node.summary_source = "builtin summary"
                 for exception_name in BUILTIN_EXCEPTIONS[call_name]:
-                    node.findings.append(
-                        ExceptionFinding(
-                            exception_name=exception_name,
-                            line=call_line,
-                            path=path,
-                            implicit=True,
-                            operation="native call",
-                        )
-                    )
-                node.escaping_exceptions = sorted(BUILTIN_EXCEPTIONS[call_name])
-            elif call_name in LIBRARY_EXCEPTIONS:
-                node.summary_source = "library"
-                for exception_name in LIBRARY_EXCEPTIONS[call_name]:
                     finding = ExceptionFinding(
                         exception_name=exception_name,
                         line=call_line,
                         path=path,
                         implicit=True,
-                        operation="library summary",
+                        operation="builtin summary",
                     )
                     report.findings.append(finding)
                     node.findings.append(finding)
-                node.escaping_exceptions = sorted(LIBRARY_EXCEPTIONS[call_name])
+                node.escaping_exceptions = sorted(BUILTIN_EXCEPTIONS[call_name])
+            elif call_name in STDLIB_METHOD_EXCEPTIONS:
+                node.summary_source = "stdlib summary"
+                for exception_name in STDLIB_METHOD_EXCEPTIONS[call_name]:
+                    finding = ExceptionFinding(
+                        exception_name=exception_name,
+                        line=call_line,
+                        path=path,
+                        implicit=True,
+                        operation="stdlib summary",
+                    )
+                    report.findings.append(finding)
+                    node.findings.append(finding)
+                node.escaping_exceptions = sorted(STDLIB_METHOD_EXCEPTIONS[call_name])
+            elif call_name in SUMMARY_EXCEPTIONS:
+                node.summary_source = summary_source_for_name(call_name)
+                for exception_name in SUMMARY_EXCEPTIONS[call_name]:
+                    finding = ExceptionFinding(
+                        exception_name=exception_name,
+                        line=call_line,
+                        path=path,
+                        implicit=True,
+                        operation=node.summary_source,
+                    )
+                    report.findings.append(finding)
+                    node.findings.append(finding)
+                node.escaping_exceptions = sorted(SUMMARY_EXCEPTIONS[call_name])
             else:
                 report.unresolved_calls.append(
                     UnresolvedCall(name=call_name, line=call_line, path=path)
                 )
             return node
 
+        summary = target.summary
         node = CallTreeNode(
-            name=call_name,
+            name=target.display_name,
             line=call_line,
             path=path,
             resolved=True,
             definition_line=summary.line,
+            summary_source=target.summary_source,
             handled_exceptions=call_site.handled_exceptions,
         )
 
@@ -436,24 +457,71 @@ class ModuleAnalyzer:
             report.findings.append(finding)
             node.findings.append(finding)
 
-        if call_name in visited:
+        visit_key = (target.analyzer.path, summary.name)
+        if visit_key in visited:
             node.recursive = True
             self._refresh_escaping_exceptions(node)
             return node
 
-        visited.add(call_name)
+        visited.add(visit_key)
         for nested_call_site in summary.calls:
             node.children.append(
-                self._explore_call(
+                target.analyzer._explore_call(
                     call_site=nested_call_site,
                     path=path + (nested_call_site.name,),
                     visited=visited,
                     report=report,
                 )
             )
-        visited.remove(call_name)
+        visited.remove(visit_key)
         self._refresh_escaping_exceptions(node)
         return node
+
+    def _resolve_call_target(self, call_name: str) -> ResolvedCallTarget | None:
+        summary = self.function_summaries.get(call_name)
+        if summary is not None:
+            return ResolvedCallTarget(analyzer=self, summary=summary, display_name=call_name)
+
+        return self._resolve_imported_function(call_name)
+
+    def _resolve_imported_function(self, call_name: str) -> ResolvedCallTarget | None:
+        parts = call_name.split(".")
+        for split_index in range(len(parts) - 1, 0, -1):
+            module_name = ".".join(parts[:split_index])
+            function_name = ".".join(parts[split_index:])
+            if "." in function_name:
+                continue
+
+            analyzer = self._load_imported_analyzer(module_name)
+            if analyzer is None:
+                continue
+
+            summary = analyzer.function_summaries.get(function_name)
+            if summary is None:
+                continue
+
+            return ResolvedCallTarget(
+                analyzer=analyzer,
+                summary=summary,
+                display_name=call_name,
+                summary_source=source_kind_for_path(analyzer.path),
+            )
+        return None
+
+    def _load_imported_analyzer(self, module_name: str) -> ModuleAnalyzer | None:
+        source_path = module_source_path(module_name)
+        if source_path is None:
+            return None
+
+        analyzer = self._analyzer_cache.get(source_path)
+        if analyzer is not None:
+            return analyzer
+
+        analyzer = ModuleAnalyzer(
+            source_path, module_name=module_name, analyzer_cache=self._analyzer_cache
+        )
+        self._analyzer_cache[source_path] = analyzer
+        return analyzer
 
     def _refresh_escaping_exceptions(self, node: CallTreeNode) -> None:
         escaping: set[str] = set()
@@ -497,11 +565,19 @@ class ModuleAnalyzer:
         )
 
 
-def _call_name(node: ast.Call, import_aliases: dict[str, str] | None = None) -> str | None:
+def _call_name(
+    node: ast.AST,
+    import_aliases: dict[str, str] | None = None,
+    variable_types: dict[str, str] | None = None,
+) -> str | None:
+    if not isinstance(node, ast.Call):
+        return None
     raw_name = _dotted_name(node.func)
     if raw_name is None or import_aliases is None:
         return raw_name
     first_part = raw_name.split(".", maxsplit=1)[0]
+    if variable_types is not None and first_part in variable_types:
+        return _resolve_variable_type(raw_name, variable_types)
     if "." in raw_name and first_part not in import_aliases:
         return None
     return _resolve_import_alias(raw_name, import_aliases)
@@ -513,7 +589,7 @@ def _dotted_name(node: ast.AST) -> str | None:
     if isinstance(node, ast.Attribute):
         base_name = _dotted_name(node.value)
         if base_name is None:
-            return node.attr
+            return None
         return f"{base_name}.{node.attr}"
     return None
 
@@ -525,6 +601,14 @@ def _resolve_import_alias(name: str, import_aliases: dict[str, str]) -> str:
         return name
     if not separator:
         return resolved_first_part
+    return f"{resolved_first_part}.{remaining}"
+
+
+def _resolve_variable_type(name: str, variable_types: dict[str, str]) -> str:
+    first_part, separator, remaining = name.partition(".")
+    resolved_first_part = variable_types.get(first_part)
+    if resolved_first_part is None or not separator:
+        return name
     return f"{resolved_first_part}.{remaining}"
 
 

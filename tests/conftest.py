@@ -40,6 +40,20 @@ def requests_module_path(project_root: Path) -> Path:
     return project_root / "tests" / "fixtures" / "requests_module.py"
 
 
+@pytest.fixture(scope="session")
+def json_module_path(project_root: Path) -> Path:
+    """Return the module used to exercise stdlib source traversal."""
+
+    return project_root / "tests" / "fixtures" / "json_module.py"
+
+
+@pytest.fixture(scope="session")
+def pathlib_module_path(project_root: Path) -> Path:
+    """Return the module used to exercise stdlib method summaries."""
+
+    return project_root / "tests" / "fixtures" / "pathlib_module.py"
+
+
 @pytest.fixture(scope="class")
 def sample_module_test_context(
     request: pytest.FixtureRequest, project_root: Path, sample_module_path: Path

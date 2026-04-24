@@ -22,7 +22,8 @@ class TestCli:
         assert exit_code == 0
         assert 'Statement at line 19: value = load_value("config.txt")' in captured.out
         assert "ValueError via load_value -> read_number -> parse_number" in captured.out
-        assert "open via load_value -> read_number -> open" in captured.out
+        assert "FileNotFoundError via load_value -> read_number -> open" in captured.out
+        assert "TypeError via load_value -> read_number -> parse_number -> int" in captured.out
 
     def test_main_can_render_tree_output(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -43,6 +44,7 @@ class TestCli:
         assert "open" in captured.out
         assert "FileNotFoundError, OSError" in captured.out
         assert "[raises ValueError]" in captured.out
+        assert "[builtin summary]" in captured.out
 
 
 def test_main_renders_swallowed_exceptions_in_tree_output(
@@ -103,3 +105,41 @@ def test_main_renders_library_summaries_in_tree_output(
     assert "requests.get" in captured.out
     assert "ConnectionError, RequestException, Timeout, TooManyRedirects" in captured.out
     assert "[library summary]" in captured.out
+
+
+def test_main_renders_library_source_in_tree_output(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    project_root,
+    json_module_path,
+) -> None:
+    monkeypatch.chdir(project_root)
+    monkeypatch.setattr("sys.argv", ["except", str(json_module_path), "8", "--format", "tree"])
+
+    exit_code = cli.main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "parse_payload" in captured.out
+    assert "json.loads" in captured.out
+    assert "JSONDecodeError" in captured.out
+    assert "[stdlib source]" in captured.out
+
+
+def test_main_renders_stdlib_method_summaries_in_tree_output(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    project_root,
+    pathlib_module_path,
+) -> None:
+    monkeypatch.chdir(project_root)
+    monkeypatch.setattr("sys.argv", ["except", str(pathlib_module_path), "9", "--format", "tree"])
+
+    exit_code = cli.main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "read_config" in captured.out
+    assert "pathlib.Path.read_text" in captured.out
+    assert "UnicodeDecodeError" in captured.out
+    assert "[stdlib summary]" in captured.out
