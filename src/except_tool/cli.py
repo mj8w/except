@@ -18,7 +18,13 @@ def build_parser() -> argparse.ArgumentParser:
         prog="except",
         description=(
             "Trace the exceptions that can be raised, swallowed, or left escaping "
-            "from a Python line."
+            "from a Python line, including builtin, stdlib, and library call paths."
+        ),
+        epilog=(
+            "Tree output tags: [raises] introduces exceptions at a row; [swallows] "
+            "catches them there; [builtin summary], [stdlib summary], [stdlib source], "
+            "[library summary], and [library source] describe where the row's "
+            "exception knowledge came from."
         ),
     )
     parser.add_argument("source_file", help="Python source file to inspect.")
@@ -29,7 +35,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--format",
         choices=("summary", "tree"),
         default="summary",
-        help="Output style: compact summary or two-column propagation tree.",
+        help=(
+            "Output style: compact summary or two-column propagation tree with "
+            "source and summary tags."
+        ),
     )
     return parser
 

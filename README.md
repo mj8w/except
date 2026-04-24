@@ -27,7 +27,8 @@ calls whose implementation may not even be Python source.
 - which exceptions are raised at each level
 - which exceptions still escape after local `try`/`except` handling
 - which exceptions are swallowed before they reach the caller
-- which known library calls are summarized from curated rules
+- which builtins, stdlib calls, and library calls are backed by summaries
+- which imported Python modules can be traversed from real source
 - which calls remain unresolved and need human attention
 
 The main audience is Python developers who want a fast first pass before making
@@ -72,7 +73,7 @@ Options:
 - `--format summary`: compact output grouped by explicit and implicit exception
   findings. This is the default.
 - `--format tree`: two-column call-tree output showing current exceptions at
-  each call level.
+  each call level, including summary and source-confidence tags.
 
 ## Summary Output
 
@@ -85,12 +86,15 @@ except scratch_exception_demo.py 27
 ```text
 Statement at line 27: return ratio_from_file("missing.txt", 0)
 
+Potential exceptions (explicit raise):
+- ValueError via ratio_from_file -> read_number -> parse_number (line 8): empty input
+
 Potential exceptions (implicit operations):
 - ZeroDivisionError via ratio_from_file (line 23) [arithmetic]
-
-Unresolved calls:
-- int via ratio_from_file -> read_number -> parse_number -> int (line 9)
-- open via ratio_from_file -> read_number -> open (line 14)
+- FileNotFoundError via ratio_from_file -> read_number -> open (line 13) [builtin summary]
+- OSError via ratio_from_file -> read_number -> open (line 13) [builtin summary]
+- TypeError via ratio_from_file -> read_number -> parse_number -> int (line 8) [builtin summary]
+- ValueError via ratio_from_file -> read_number -> parse_number -> int (line 8) [builtin summary]
 ```
 
 ## Tree Output
@@ -103,7 +107,11 @@ what happened at that level:
 
 - `[raises ValueError]`: this call introduces `ValueError`
 - `[swallows ValueError]`: this call catches `ValueError` and does not re-raise it
-- `[library summary]`: the row comes from a curated library rule
+- `[builtin summary]`: the row comes from a known builtin exception table
+- `[stdlib summary]`: the row comes from a curated stdlib summary
+- `[stdlib source]`: the row was traversed from Python stdlib source
+- `[library summary]`: the row comes from a curated third-party summary
+- `[library source]`: the row was traversed from importable third-party Python source
 
 ```bash
 except scratch_exception_demo.py 27 --format tree
@@ -114,19 +122,65 @@ Call tree             Exceptions
 ratio_from_file       FileNotFoundError, OSError, TypeError, ZeroDivisionError
                       [raises ZeroDivisionError]
   read_number         FileNotFoundError, OSError, TypeError; [swallows ValueError]
-    open              FileNotFoundError, OSError; [raises FileNotFoundError, OSError]
+    open              FileNotFoundError, OSError; [builtin summary]
     parse_number      TypeError, ValueError; [raises ValueError]
-      int             TypeError, ValueError; [raises TypeError, ValueError]
+      int             TypeError, ValueError; [builtin summary]
 ```
 
 That table says `ValueError` can happen inside `parse_number`, but it is caught
 inside `read_number`, so it does not escape up to `ratio_from_file`.
 
+## Source And Summary Tags
+
+`except` now uses a few different confidence levels when it reports a call:
+
+- builtin summary: known exception sets for builtins like `open()` and `int()`
+- stdlib summary: curated stdlib method summaries like `pathlib.Path.read_text()`
+- stdlib source: imported stdlib Python source that `except` can actually walk
+- library summary: curated third-party summaries such as `requests.get`
+- library source: imported third-party Python source that `except` can walk
+
+This distinction matters. It tells you whether a row was inferred from actual
+Python source or from a maintained summary table.
+
+For example, builtins now show up as first-class rows instead of unresolved
+calls:
+
+```text
+Call tree             Exceptions
+load_value            FileNotFoundError, OSError, TypeError, ValueError
+  read_number         FileNotFoundError, OSError, TypeError, ValueError
+    open              FileNotFoundError, OSError; [builtin summary]
+    parse_number      TypeError, ValueError; [raises ValueError]
+      int             TypeError, ValueError; [builtin summary]
+```
+
+Pure-Python stdlib code can also be traversed:
+
+```text
+Call tree             Exceptions
+parse_payload         IndexError, JSONDecodeError, KeyError, TypeError
+  json.loads          IndexError, JSONDecodeError, KeyError, TypeError
+                      [raises IndexError, JSONDecodeError, KeyError, TypeError]
+                      [stdlib source]
+```
+
+And high-value stdlib methods can use targeted summaries:
+
+```text
+Call tree             Exceptions
+read_config           FileNotFoundError, OSError, UnicodeDecodeError
+  pathlib.Path        -
+  pathlib.Path.read_text
+                      FileNotFoundError, OSError, UnicodeDecodeError
+                      [stdlib summary]
+```
+
 ## Library Summaries
 
-Some calls are not practical to inspect statically. A package may be compiled,
-dynamic, or installed without source. For those cases, `except` can use curated
-summaries for known library calls.
+Some third-party calls are not practical to inspect statically. A package may
+be compiled, dynamic, or installed without source. For those cases, `except`
+can use curated summaries for known library calls.
 
 For example, this import:
 
@@ -165,8 +219,9 @@ issues while still checking the same files.
 `except` is useful today, but it is still conservative:
 
 - local resolution is module-scoped
-- method calls and dynamic dispatch are not deeply modeled
-- library knowledge depends on curated summaries
+- method calls are only lightly inferred when local assignments make the target obvious
+- deep dynamic dispatch is not modeled
+- library knowledge still depends partly on curated summaries
 - type-specific exception behavior is not yet inferred
 - decorators and framework routing are parsed as ordinary Python
 - implicit operation inference is intentionally broad in some places
